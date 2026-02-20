@@ -5,6 +5,12 @@ from gymnasium import spaces
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
+import pymatching
+
+
+
+
+
 # --- CONFIGURATION ---
 CONFIG = {
     "distance": 5,           # Code Distance (d=3, 5, 7)
@@ -84,10 +90,11 @@ class AncillaManager:
 
 
 class QECMaintenanceEnv(gym.Env):
-    def __init__(self, config=CONFIG, debug=True):
+    def __init__(self, config=CONFIG, render_mode=None):
         self.cfg = config
         self.distance = config['distance']
-        self.debug = debug
+        self.render_mode = render_mode
+        self.debug = (self.render_mode == "human") 
         
         self.lattice = self._build_rotated_surface_lattice(self.distance)
         self.num_data = self.distance * self.distance
@@ -112,6 +119,11 @@ class QECMaintenanceEnv(gym.Env):
         self.action_space = spaces.MultiDiscrete([self.num_data + 2, self.num_ancilla + 1])
         
         self.step_count = 0
+        
+        # --- ADD THIS LINE HERE ---
+        self._setup_pymatching()
+
+        
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -121,13 +133,10 @@ class QECMaintenanceEnv(gym.Env):
         self.last_syndrome.fill(0)
         self.step_count = 0
         
-        # Physical state: |0>, tracking both X and Z error chains
-        if self.debug:
+        if self.render_mode == "human":
             print("\n" + "="*80)
             print("RESET - NEW EPISODE (Unified Protection)")
             print("="*80)
-            print("  Physical State: |0>")
-            print("  Logical Goals: Protect against BOTH X-chains (Bit Flip) and Z-chains (Phase Flip)")
         
         # Burn-in
         self._run_cycle(inject_noise=False)
@@ -191,17 +200,30 @@ class QECMaintenanceEnv(gym.Env):
             
         return self._get_obs(), reward, terminated, False, {}
 
-    def _check_logical_failure(self):
-        # Check Vertical Chain (X-Errors)
-        z_parity = 0
-        for idx in self.logical_z_indices: z_parity += self.qubit_errors[idx, 0] 
-        
-        # Check Horizontal Chain (Z-Errors)
-        x_parity = 0
-        for idx in self.logical_x_indices: x_parity += self.qubit_errors[idx, 1]
 
-        # Fail if EITHER parity is odd
-        return (z_parity % 2 != 0) or (x_parity % 2 != 0)
+
+    def _check_logical_failure(self):
+        # 1. Extract current physical errors
+        x_errs = self.qubit_errors[:, 0]
+        z_errs = self.qubit_errors[:, 1]
+        
+        # 2. Calculate ideal syndromes (what a perfect measurement would see)
+        syndrome_x = (self.Hx @ x_errs) % 2  # Z-stabs detecting X-errs
+        syndrome_z = (self.Hz @ z_errs) % 2  # X-stabs detecting Z-errs
+        
+        # 3. Ask PyMatching to predict the logical observable based on syndromes
+        pred_logical_x = self.matcher_x.decode(syndrome_x)[0]
+        pred_logical_z = self.matcher_z.decode(syndrome_z)[0]
+        
+        # 4. Calculate the ACTUAL logical observable from the physical errors
+        actual_logical_x = np.sum(x_errs[self.logical_z_indices]) % 2
+        actual_logical_z = np.sum(z_errs[self.logical_x_indices]) % 2
+        
+        # 5. The state is unrecoverable ONLY if the decoder's prediction is wrong
+        failed_x = (pred_logical_x != actual_logical_x)
+        failed_z = (pred_logical_z != actual_logical_z)
+        
+        return failed_x or failed_z
 
     def _apply_idle_noise(self):
         for i in range(self.num_data):
@@ -233,30 +255,30 @@ class QECMaintenanceEnv(gym.Env):
             if self.lattice['ancilla_types'][idx] == 'X':
                 self.sim.h(anc_qubit)
 
-        # 3. Synchronized interaction phases (time-sliced execution)
-        # Standard surface code has 4 interaction steps (North, West, East, South)
+        # 3. Synchronized interaction phases
         max_neighbors = 4 
-        
         for step in range(max_neighbors):
-            # Each ancilla interacts with its step-th neighbor in this time slice
             for idx in range(self.num_ancilla):
                 anc_qubit = self.num_data + idx
                 type_ = self.lattice['ancilla_types'][idx]
                 neighbors = self.lattice['neighbors'][idx]
                 
-                # Skip if ancilla has no neighbor at this step
                 if step < len(neighbors):
                     data_qubit = neighbors[step]
                     
+                    if data_qubit is None: continue # Skip missing boundary qubits!
+                    
                     # Apply CNOT
                     if type_ == 'X': 
-                        self.sim.cx(anc_qubit, data_qubit) # Control->Target
+                        self.sim.cx(anc_qubit, data_qubit)
                     else:            
-                        self.sim.cx(data_qubit, anc_qubit) # Target<-Control
+                        self.sim.cx(data_qubit, anc_qubit)
                     
-                    # Inject hook error for this interaction
+                    # (Your hook noise injection stays the same here)
                     if inject_noise:
-                        self._inject_single_hook(anc_qubit, neighbors, step, type_)
+                        self._inject_single_hook(anc_qubit, neighbors, step, type_) 
+                        # Note: you may need to pass actual_ns (the list without Nones) 
+                        # to your noise injector if it relies on lengths!
 
         # 4. Measure (Hadamard for X-ancillas, then measure all)
         for idx in range(self.num_ancilla):
@@ -316,20 +338,33 @@ class QECMaintenanceEnv(gym.Env):
         
         for r in range(-1, d):
             for c in range(-1, d):
-                potential_ns = [(r, c), (r, c+1), (r+1, c), (r+1, c+1)]
-                valid_ns = []
-                for pr, pc in potential_ns:
-                    if (pr, pc) in lat['data_lookup']:
-                        valid_ns.append(lat['data_lookup'][(pr, pc)])
-                
-                if len(valid_ns) < 2: continue
-                
                 sum_rc = r + c
                 if sum_rc % 2 == 0: stab_type = 'Z'
                 else:               stab_type = 'X'
                 
-                is_horizontal_pair = (len(valid_ns) == 2 and abs(valid_ns[0] - valid_ns[1]) == 1)
-                is_vertical_pair   = (len(valid_ns) == 2 and abs(valid_ns[0] - valid_ns[1]) == d)
+                # 1. The Canonical, Synced Schedules
+                if stab_type == 'X':
+                    # N-Pattern (Safe vertical hooks)
+                    potential_ns = [(r, c), (r+1, c), (r, c+1), (r+1, c+1)]
+                else:
+                    # Z-Pattern (Safe horizontal hooks)
+                    potential_ns = [(r, c), (r, c+1), (r+1, c), (r+1, c+1)]
+                
+                valid_ns = []
+                valid_count = 0
+                for pr, pc in potential_ns:
+                    if (pr, pc) in lat['data_lookup']:
+                        valid_ns.append(lat['data_lookup'][(pr, pc)])
+                        valid_count += 1
+                    else:
+                        valid_ns.append(None) # Pad with None to preserve timing!
+                
+                if valid_count < 2: continue
+                
+                # Check boundary types using actual neighbors
+                actual_ns = [n for n in valid_ns if n is not None]
+                is_horizontal_pair = (len(actual_ns) == 2 and abs(actual_ns[0] - actual_ns[1]) == 1)
+                is_vertical_pair   = (len(actual_ns) == 2 and abs(actual_ns[0] - actual_ns[1]) == d)
                 
                 if stab_type == 'X' and is_horizontal_pair: continue 
                 if stab_type == 'Z' and is_vertical_pair: continue 
@@ -339,9 +374,42 @@ class QECMaintenanceEnv(gym.Env):
                 lat['neighbors'].append(valid_ns)
         return lat
 
+        
     def _get_obs(self):
         return np.concatenate([self.syndrome_buffer.flatten(), 
                                (self.ancilla_manager.timers > 0).astype(float)])
+
+    def _setup_pymatching(self):
+        # 1. Separate stabilizers by type
+        z_stabs = [i for i, t in enumerate(self.lattice['ancilla_types']) if t == 'Z']
+        x_stabs = [i for i, t in enumerate(self.lattice['ancilla_types']) if t == 'X']
+        
+        # 2. Build Parity Check Matrices (PCM)
+        # Hx: Z-stabilizers detecting X-errors
+        self.Hx = np.zeros((len(z_stabs), self.num_data), dtype=np.uint8)
+        for i, stab_idx in enumerate(z_stabs):
+            for qubit_idx in self.lattice['neighbors'][stab_idx]:
+                if qubit_idx is not None:
+                    self.Hx[i, qubit_idx] = 1
+                    
+        # Hz: X-stabilizers detecting Z-errors
+        self.Hz = np.zeros((len(x_stabs), self.num_data), dtype=np.uint8)
+        for i, stab_idx in enumerate(x_stabs):
+            for qubit_idx in self.lattice['neighbors'][stab_idx]:
+                if qubit_idx is not None:
+                    self.Hz[i, qubit_idx] = 1
+                    
+        # 3. Build Logical Operator Matrices
+        Lx = np.zeros((1, self.num_data), dtype=np.uint8)
+        Lx[0, self.logical_z_indices] = 1  # X-errors crossing the Z-boundary
+        
+        Lz = np.zeros((1, self.num_data), dtype=np.uint8)
+        Lz[0, self.logical_x_indices] = 1  # Z-errors crossing the X-boundary
+        
+        # 4. Initialize PyMatching Decoders
+        self.matcher_x = pymatching.Matching.from_check_matrix(self.Hx, faults_matrix=Lx)
+        self.matcher_z = pymatching.Matching.from_check_matrix(self.Hz, faults_matrix=Lz)
+
 
     def render(self, step=0, action=None):
         d = self.distance
@@ -422,19 +490,23 @@ if __name__ == "__main__":
     TEST_CONFIG['std_px'] = 0.0
     TEST_CONFIG['std_pz'] = 0.0
 
-    env = QECMaintenanceEnv(TEST_CONFIG, debug=True)
+    env = QECMaintenanceEnv(TEST_CONFIG, render_mode="human")
     
     print("Starting Unified Protection Demo...")
     
     for ep in range(3):
         obs, _ = env.reset()
-        env.render(step=0)
+        if env.render_mode == "human": 
+            env.render(step=0)
     
         for i in range(5):
             obs, reward, done, _, _ = env.step([env.num_data, 0])
-            print(f"  Step {i+1} Reward: {reward}")
-            env.render(step=i+1)
+            
+            if env.render_mode == "human":
+                print(f"  Step {i+1} Reward: {reward}")
+                env.render(step=i+1)
             
             if done:
-                print(f"  FAILED at step {i+1}!")
+                if env.render_mode == "human":
+                    print(f"  FAILED at step {i+1}!")
                 break
