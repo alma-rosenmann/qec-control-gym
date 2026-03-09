@@ -2,6 +2,13 @@
 
 A Gymnasium environment for reinforcement learning on quantum error correction with non-stationary noise and sensor maintenance. This environment simulates a **rotated surface code** where the agent must simultaneously correct errors and manage the health of measurement ancillas.
 
+## Project layout
+
+- **`config.json`** — Default environment parameters (distance, noise, drift, cooldown, etc.).
+- **`env.py`** — `NoiseManager`, `AncillaManager`, `QECMaintenanceEnv`, and `load_config()`.
+- **`render.py`** — Lattice visualization (`render_qec(env, step, action)`).
+- **`qec_control.py`** — Entry point: loads `config.json` into `CONFIG`, re-exports `QECMaintenanceEnv` and `load_config`; run as `python qec_control.py` for the demo.
+
 ## Overview
 
 This environment models a realistic quantum error correction scenario where:
@@ -151,6 +158,21 @@ If **either** chain has odd parity, logical failure occurs.
 
 ## Configuration
 
+Default configuration is loaded from **`config.json`**. You can override with a dict or load another file:
+
+```python
+from qec_control import QECMaintenanceEnv, CONFIG, load_config
+
+# Use default config (from config.json)
+env = QECMaintenanceEnv(config=CONFIG, render_mode="human")
+
+# Or load a custom config file
+custom = load_config("path/to/config.json")
+env = QECMaintenanceEnv(config=custom)
+```
+
+Main keys in `config.json` (or the CONFIG dict):
+
 ```python
 CONFIG = {
     "distance": 5,              # Code distance (d=3, 5, 7, ...)
@@ -182,7 +204,7 @@ CONFIG = {
 from qec_control import QECMaintenanceEnv, CONFIG
 
 # Create environment
-env = QECMaintenanceEnv(config=CONFIG, debug=True)
+env = QECMaintenanceEnv(config=CONFIG, render_mode="human")
 
 # Reset
 obs, info = env.reset()
