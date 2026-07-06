@@ -1,11 +1,11 @@
 {
-  "distance": 9,
+  "distance": 3,
   "readout_error": 0.0,
   "px0": 0.01,
-  "pz0": 0.01,
+  "pz0": 0.00,
   "std_px": 0.01,
-  "std_pz": 0.01,
-  "rounds_history": 5,
+  "std_pz": 0.00,
+  "rounds_history": 1,
   "tc_data": 50.0, 
 
 
@@ -14,6 +14,6 @@
   "panc0": 0.0,
   "tc_anc": 20.0,
   "cooldown_time": 5,
-  "check_period": 10,
-  "max_steps": 1000
+  "check_period": 5,
+  "max_steps": 100
 }

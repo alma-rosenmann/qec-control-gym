@@ -1,4 +1,9 @@
-gymnasium>=0.29.0
-stim>=1.13.0
-numpy>=1.24.0
-
+gymnasium==0.28.1
+joblib==1.5.2
+matplotlib==3.11.0
+numpy==2.5.0
+pymatching==2.4.0
+render==v1.0.0
+scipy==1.18.0
+stim==1.16.0
+torch==2.6.0
