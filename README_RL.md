@@ -1,9 +1,16 @@
+# Reinforcement Learning for Quantum Error Correction 
+This is the repository for the bachelor thesis Reinforcement Learning for Quantum Error Correction
+
+The environment from the original [repository]([https://yourwebsite.com](https://github.com/jaq-lab/qec-control-gym.git)) was slightly modified, can can be found now under env_raw.py. 
+
 The agents are both uploaded as python notebook files, with their respective plotting functions.
 In order to run on a local device, make sure that the notebooks are in the same folder as config.json, and env_raw.py,
 a slightly modified version of the original env.py to make sure that the agent observes the raw syndromes 
 instead of the change in syndromes.
+
 Naturally, the parameters in config.json can be modified for future studies, and the reward formulation in env_raw.py.
-Running the agents requires no special steps, only the requirements to be downloaded. 
+Running the agents to re-create the results in the thesis requires no special steps, only the requirements to be downloaded. 
+
 Due to long run-times, it is recommended to convert the notebooks to python files:
 ```jupyter nbconvert --to script PPO.ipynb```
 Or alternatively
